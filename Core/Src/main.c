@@ -37,12 +37,15 @@
 #define BUFFER_SIZE  128
 #define FLOAT_TO_INT16 32768.0f
 #define FLOAT_TO_INT12 2047.5f
+//#define FLOAT_TO_INT12 1024.0f
+//1024.0f//
+#define INT12_TO_FLOAT 1.0f / (2047.5f)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-void HAL_DAC_ConvHalfCpltCallbackCh2(DAC_HandleTypeDef *hdac);
-void HAL_DAC_ConvCpltCallbackCh2(DAC_HandleTypeDef *hdac);
+void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac);
+void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac);
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -50,7 +53,7 @@ ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
 DAC_HandleTypeDef hdac;
-DMA_HandleTypeDef hdma_dac2;
+DMA_HandleTypeDef hdma_dac1;
 
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim6;
@@ -82,8 +85,15 @@ uint32_t dacData[NS] = { 2048, 2149, 2250, 2350, 2450, 2549, 2646, 2742, 2837,
 		1946, 2047 };
 static volatile uint32_t *outBufPtr = &dacData[0];
 uint8_t dataReadyFlag;
-double tick = 0;
+double deltaOmega = 0.0f;
+double omega = 0.0f;
 uint8_t timesCalled = 0;
+uint16_t adcControlData[1];
+float potValue;
+float frequency;
+double period;
+float (*signalFunc)(float);
+char resetButton = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -101,32 +111,54 @@ static void MX_TIM2_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-void HAL_DACEx_ConvHalfCpltCallbackCh2(DAC_HandleTypeDef *hdac) {
-//	updateCh1Part2 = 1;
-	outBufPtr = &dacData[0];
-	dataReadyFlag = 1;
-	timesCalled++;
+void HAL_DACEx_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
+//	outBufPtr = &dacData[0];
+//	dataReadyFlag = 1;
 }
-void HAL_DACEx_ConvCpltCallbackCh2(DAC_HandleTypeDef *hdac) {
-//	updateCh1Part2 = 1;
-//	uint16_t output = sin(M_TWOPI * 440.0f * ms);
-	outBufPtr = &dacData[BUFFER_SIZE / 2];
-	dataReadyFlag = 1;
-	timesCalled++;
+void HAL_DACEx_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
+//		outBufPtr = &dacData[0];
+//		dataReadyFlag = 1;
+//	outBufPtr = &dacData[BUFFER_SIZE / 2];
+//	dataReadyFlag = 1;
 }
+
 void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
-//	updateCh1Part2 = 1;
 	outBufPtr = &dacData[0];
 	dataReadyFlag = 1;
-	timesCalled++;
 }
 void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
-//	updateCh1Part2 = 1;
-//	uint16_t output = sin(M_TWOPI * 440.0f * ms);
+//		outBufPtr = &dacData[0];
+//		dataReadyFlag = 1;
 	outBufPtr = &dacData[BUFFER_SIZE / 2];
 	dataReadyFlag = 1;
-	timesCalled++;
 }
+
+//void HAL_DAC_ConvCpltCallbackCh2(DAC_HandleTypeDef *hdac) {
+//	outBufPtr = &dacData[BUFFER_SIZE / 2];
+//	dataReadyFlag = 1;
+//}
+
+//void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
+////	updateCh1Part2 = 1;
+//	outBufPtr = &dacData[0];
+//	dataReadyFlag = 1;
+//	timesCalled++;
+//}
+//void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
+////	updateCh1Part2 = 1;
+////	uint16_t output = sin(M_TWOPI * 440.0f * ms);
+//	outBufPtr = &dacData[BUFFER_SIZE / 2];
+//	dataReadyFlag = 1;
+//	timesCalled++;
+//}
+// Called when buffer is completely filled
+float freqRange = 10.0f - 0.0f;
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
+	potValue = ((float) (4095 - adcControlData[0])) / 4095.0f;
+	frequency = potValue * freqRange;
+	setFrequency(frequency);
+}
+
 //void HAL_DACEx_ConvCpltCallbackCh2(DAC_HandleTypeDef *hdac) {
 //	timesCalled++;
 //}
@@ -136,26 +168,76 @@ void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
 //void HAL_DACEx_ErrorCallbackCh2(DAC_HandleTypeDef *hdac) {
 //	timesCalled++;
 //}
+float sine(float phase) {
+//	return 0.0f;
+	return sinf(phase);
+}
+
+float square(float phase) {
+	if (phase <= M_PI) {
+		return 1.0;
+	} else {
+		return -1.0f;
+	}
+}
+
+float sawtoothUp(float phase) {
+	return 1.0 - 2.0 * (phase * (1.0 / M_TWOPI));
+}
+
+float sawtoothDown(float phase) {
+	return (2.0 * (phase * (1.0 / M_TWOPI))) - 1.0;
+}
+
+float triangle(float phase) {
+	float value = (2.0 * (phase * (1.0 / M_TWOPI))) - 1.0;
+	if (value < 0.0) {
+		value = -value;
+	}
+	return 2.0 * (value - 0.5);
+}
+
+void setFrequency(double frequency) {
+	deltaOmega = frequency / 48000.0f;
+}
+
 void processData() {
+//	static float potValue;
+
+
 	for (uint8_t n = 0; n < BUFFER_SIZE / 2; n++) {
-		float freq = 1.0f;
+
 //		HAL_GetTick()
 //		float output = sin(M_TWOPI * freq * ((float) HAL_GetTick()) / 1000.0f);
-		float output = sin(
-				M_TWOPI * 1.0 * freq * (float) HAL_GetTick() / 1000.0f);
+//		potValue = ((float) adcControlData[0]) / 4095.0f;
+//
+//		freq = potValue * freqRange + 0.0f;
+//		period = 1 / freq;
 
-//		float output = sin(M_TWOPI * 2.0 * freq * tick / 48000.0f);
+//		float output = sin(
+//		M_TWOPI * freq * (float) HAL_GetTick() / 1000.0f);
+//		double seconds = tick / 24000.0f;
+
+		float output = signalFunc(M_TWOPI * omega);
 //		float output = sin(M_TWOPI * (float) n / ((float) BUFFER_SIZE / 2.0f));
 
 		output += 1.0f;
+//		if (output > 2.0f) {
+//			output = 2.0f;
+//		}
+//		if (output < 0.0f) {
+//			output = 0.0f;
+//		}
 
 		outBufPtr[n] = (uint32_t) (FLOAT_TO_INT12 * output);
 //		outBufPtr[n] = 4095;
 
-		tick += 1.0f;
-		if (tick >= 48000.0f) {
-			tick = 0.0f;
-		}
+//		tick += 1.0f;
+//		if (seconds >= period) {
+//			tick = 0.0f;
+//		}
+		omega += deltaOmega;
+		if (omega >= 1.0) { omega -= 1.0; }
 	}
 
 	dataReadyFlag = 0;
@@ -210,11 +292,14 @@ int main(void)
 //	HAL_TIM_Base_Start(&htim2);
 //	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
 //	HAL_TIM_Base_Start(&htim6);
+	signalFunc = sine;
 	HAL_TIM_Base_Start_IT(&htim6);
-	HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_2, (uint32_t*) dacData, BUFFER_SIZE,
-//			HAL_DMA_Start_IT(hdma, SrcAddress, DstAddress, DataLength)
+	HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, (uint32_t*) dacData,
+	BUFFER_SIZE,
+	DAC_ALIGN_12B_R);
+	HAL_ADC_Start_DMA(&hadc1, (uint32_t*) adcControlData, 1);
+	HAL_TIM_Base_Start(&htim2);
 
-			DAC_ALIGN_12B_R);
 	uint32_t last_time = HAL_GetTick();
   /* USER CODE END 2 */
 
@@ -224,9 +309,28 @@ int main(void)
 		if (dataReadyFlag) {
 			processData();
 		}
+		int stateOfPushButton = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);
+		if (stateOfPushButton == 1) {
+//            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+			resetButton = 0;
+		} else if (resetButton == 0) {
+//            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+			if (signalFunc == sine) {
+				signalFunc = square;
+			} else if (signalFunc == square) {
+				signalFunc = sawtoothUp;
+			} else if (signalFunc == sawtoothUp) {
+				signalFunc = sawtoothDown;
+			} else if (signalFunc == sawtoothDown) {
+				signalFunc = triangle;
+			} else if (signalFunc == triangle) {
+				signalFunc = sine;
+			}
+
+			resetButton = 1;
+		}
 //		if (HAL_GetTick() - last_time > 1000) {
-//			uart_buf_len = sprintf(uart_buf, "%u got here\r\n",
-//					(uint16_t) timesCalled);
+//			uart_buf_len = sprintf(uart_buf, "%f pot data\r\n", freq);
 //			HAL_UART_Transmit(&huart2, (uint8_t*) uart_buf, uart_buf_len, 100);
 ////			HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
 //			last_time = HAL_GetTick();
@@ -363,11 +467,11 @@ static void MX_DAC_Init(void)
     Error_Handler();
   }
 
-  /** DAC channel OUT2 config
+  /** DAC channel OUT1 config
   */
   sConfig.DAC_Trigger = DAC_TRIGGER_T6_TRGO;
   sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
-  if (HAL_DAC_ConfigChannel(&hdac, &sConfig, DAC_CHANNEL_2) != HAL_OK)
+  if (HAL_DAC_ConfigChannel(&hdac, &sConfig, DAC_CHANNEL_1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -455,7 +559,7 @@ static void MX_TIM6_Init(void)
   htim6.Instance = TIM6;
   htim6.Init.Prescaler = 0;
   htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim6.Init.Period = 3000-1;
+  htim6.Init.Period = 1500-1;
   htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
   {
@@ -513,13 +617,13 @@ static void MX_DMA_Init(void)
 {
 
   /* DMA controller clock enable */
-  __HAL_RCC_DMA1_CLK_ENABLE();
   __HAL_RCC_DMA2_CLK_ENABLE();
+  __HAL_RCC_DMA1_CLK_ENABLE();
 
   /* DMA interrupt init */
-  /* DMA1_Stream6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
+  /* DMA1_Stream5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
   /* DMA2_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
@@ -541,11 +645,11 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /*Configure GPIO pin : B1_Pin */
-  GPIO_InitStruct.Pin = B1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  /*Configure GPIO pin : PC13 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
 }
 
