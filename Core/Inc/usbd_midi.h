@@ -61,8 +61,12 @@ extern "C" {
 #define AUDIO_OUT_EP                                  0x01U
 #endif /* AUDIO_OUT_EP */
 
+#define AUDIO_IN_EP 0x81U
+#define MIC_PACKET_SZE(frq)    (uint8_t)(((frq * 1U * 2U)/1000U) & 0xFFU), \
+                               (uint8_t)((((frq * 1U * 2U)/1000U) >> 8) & 0xFFU)
+
 #ifndef USB_MIDI_CONFIG_DESC_SIZ
-#define USB_MIDI_CONFIG_DESC_SIZ                     0x6DU
+#define USB_MIDI_CONFIG_DESC_SIZ                     0x64U
 #endif
 
 
@@ -203,6 +207,8 @@ extern "C" {
 #define AUDIO_TOTAL_BUF_SIZE                          ((uint16_t)(AUDIO_OUT_PACKET * AUDIO_OUT_PACKET_NUM))
 #endif
 
+#define   AUDIO_IN_PACKET (uint16_t)(((USBD_AUDIO_FREQ * 2U) / 1000U))
+
 /* Audio Commands enumeration */
 typedef enum
 {
@@ -245,8 +251,13 @@ typedef struct
   uint16_t rd_ptr;
   uint16_t wr_ptr;
   USBD_MIDI_ControlTypeDef control;
-} USBD_MIDI_HandleTypeDef;
 
+  int16_t in_buffer[AUDIO_IN_PACKET]; // add this
+  uint8_t in_buffer_half;             // and this
+  uint8_t data_ready_flag;
+  double omega;
+  uint8_t data_in_called;
+} USBD_MIDI_HandleTypeDef;
 
 typedef struct
 {

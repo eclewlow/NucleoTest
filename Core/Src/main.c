@@ -25,6 +25,9 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
+#include "usbd_midi.h"
+extern USBD_HandleTypeDef hUsbDeviceFS;
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,6 +44,7 @@
 //#define FLOAT_TO_INT12 1024.0f
 //1024.0f//
 #define INT12_TO_FLOAT 1.0f / (2047.5f)
+//extern uint8_t dataIsReadyFlag;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -85,6 +89,7 @@ uint32_t dacData[NS] = { 2048, 2149, 2250, 2350, 2450, 2549, 2646, 2742, 2837,
 		35, 56, 82, 113, 149, 189, 234, 283, 336, 394, 456, 521, 591, 664, 740,
 		820, 902, 987, 1075, 1166, 1258, 1353, 1449, 1546, 1645, 1745, 1845,
 		1946, 2047 };
+
 static volatile uint32_t *outBufPtr = &dacData[0];
 uint8_t dataReadyFlag;
 double deltaOmega = 0.0f;
@@ -96,6 +101,7 @@ float frequency;
 double period;
 float (*signalFunc)(float);
 char resetButton = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -126,12 +132,16 @@ void HAL_DACEx_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
 
 void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
 	outBufPtr = &dacData[0];
+//	USBD_MIDI_HandleTypeDef *haudio = hUsbDeviceFS.pClassData;
+//	buf_part = haudio->in_buffer + (AUDIO_IN_PACKET / 2) * haudio->in_buffer_half;  // USB mic buffer access
 	dataReadyFlag = 1;
 }
 void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
 //		outBufPtr = &dacData[0];
 //		dataReadyFlag = 1;
 	outBufPtr = &dacData[BUFFER_SIZE / 2];
+//	USBD_MIDI_HandleTypeDef *haudio = hUsbDeviceFS.pClassData;
+//	buf_part = haudio->in_buffer + (AUDIO_IN_PACKET / 2) * haudio->in_buffer_half;  // USB mic buffer access
 	dataReadyFlag = 1;
 }
 
@@ -157,7 +167,8 @@ void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
 float freqRange = 10.0f - 0.0f;
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
 	potValue = ((float) (4095 - adcControlData[0])) / 4095.0f;
-	frequency = potValue * freqRange;
+	frequency = 440.0 + potValue * 440.0;
+//	frequency = 440.0f;
 	setFrequency(frequency);
 }
 
@@ -172,19 +183,51 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
 //}
 float sine(float phase) {
 //	return 0.0f;
-	return sinf(phase);
+	return sinf(M_TWOPI * phase);
 }
 
 float square(float phase) {
-	if (phase <= M_PI) {
+	if (phase < 0.5) {
 		return 1.0;
 	} else {
 		return -1.0f;
 	}
 }
 
-float sawtoothUp(float phase) {
-	return 1.0 - 2.0 * (phase * (1.0 / M_TWOPI));
+// This function calculates the PolyBLEPs
+double poly_blep(double t)
+{
+  double dt = deltaOmega;
+
+  // t-t^2/2 +1/2
+  // 0 < t <= 1
+  // discontinuities between 0 & 1
+  if (t < dt)
+  {
+   t /= dt;
+   return t + t - t * t - 1.0;
+  }
+
+  // t^2/2 +t +1/2
+  // -1 <= t <= 0
+  // discontinuities between -1 & 0
+  else if (t > 1 - dt)
+  {
+   t = (t - 1.0) / dt;
+   return t * t + t + t + 1.0;
+  }
+
+  // no discontinuities
+  // 0 otherwise
+  else return 0.0;
+}
+
+float sawtoothUp(float mOmega) {
+	double t = mOmega; // Define half phase
+	float value = 0.0;
+    value = (2.0 * mOmega) - 1.0; // Render naive waveshape
+    value -= poly_blep(t); // Layer output of Poly BLEP on top
+    return value;
 }
 
 float sawtoothDown(float phase) {
@@ -203,41 +246,38 @@ void setFrequency(double frequency) {
 	deltaOmega = frequency / 48000.0f;
 }
 
+uint32_t timesProcessed = 0;
+
+void processUSBData() {
+//	USBD_MIDI_HandleTypeDef *haudio = hUsbDeviceFS.pClassData;
+	USBD_MIDI_HandleTypeDef *haudio = (USBD_MIDI_HandleTypeDef*)hUsbDeviceFS.pClassDataCmsit[hUsbDeviceFS.classId];
+
+	if(haudio == NULL) {
+		return;
+	}
+	timesProcessed++;
+	int16_t *buf_part = haudio->in_buffer + (AUDIO_IN_PACKET / 2) * haudio->in_buffer_half;  // USB mic buffer access
+
+	for (uint8_t n = 0; n < AUDIO_IN_PACKET / 2; n++) {
+		float output = signalFunc(haudio->omega);
+//		output += 1.0f;
+		buf_part[n] = (int16_t) (32767.0 * output);
+//		if (haudio->omega < 0.5) {
+//			buf_part[n]=32767;
+//		} else {
+//			buf_part[n]=-32767;
+//		}
+		haudio->omega += deltaOmega;
+		if (haudio->omega >= 1.0) { haudio->omega -= 1.0; }
+	}
+	haudio->data_ready_flag = 0;
+}
+
 void processData() {
-//	static float potValue;
-
-
 	for (uint8_t n = 0; n < BUFFER_SIZE / 2; n++) {
-
-//		HAL_GetTick()
-//		float output = sin(M_TWOPI * freq * ((float) HAL_GetTick()) / 1000.0f);
-//		potValue = ((float) adcControlData[0]) / 4095.0f;
-//
-//		freq = potValue * freqRange + 0.0f;
-//		period = 1 / freq;
-
-//		float output = sin(
-//		M_TWOPI * freq * (float) HAL_GetTick() / 1000.0f);
-//		double seconds = tick / 24000.0f;
-
 		float output = signalFunc(M_TWOPI * omega);
-//		float output = sin(M_TWOPI * (float) n / ((float) BUFFER_SIZE / 2.0f));
-
 		output += 1.0f;
-//		if (output > 2.0f) {
-//			output = 2.0f;
-//		}
-//		if (output < 0.0f) {
-//			output = 0.0f;
-//		}
-
 		outBufPtr[n] = (uint32_t) (FLOAT_TO_INT12 * output);
-//		outBufPtr[n] = 4095;
-
-//		tick += 1.0f;
-//		if (seconds >= period) {
-//			tick = 0.0f;
-//		}
 		omega += deltaOmega;
 		if (omega >= 1.0) { omega -= 1.0; }
 	}
@@ -295,7 +335,9 @@ int main(void)
 //	HAL_TIM_Base_Start(&htim2);
 //	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
 //	HAL_TIM_Base_Start(&htim6);
-	signalFunc = sine;
+	signalFunc = sawtoothUp;
+	setFrequency(440.0);
+
 	HAL_TIM_Base_Start_IT(&htim6);
 	HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, (uint32_t*) dacData,
 	BUFFER_SIZE,
@@ -304,38 +346,45 @@ int main(void)
 	HAL_TIM_Base_Start(&htim2);
 
 	uint32_t last_time = HAL_GetTick();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 	while (1) {
+		USBD_MIDI_HandleTypeDef *haudio = (USBD_MIDI_HandleTypeDef*)hUsbDeviceFS.pClassDataCmsit[hUsbDeviceFS.classId];
 		if (dataReadyFlag) {
 			processData();
 		}
-		int stateOfPushButton = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);
-		if (stateOfPushButton == 1) {
-//            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-			resetButton = 0;
-		} else if (resetButton == 0) {
-//            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-			if (signalFunc == sine) {
-				signalFunc = square;
-			} else if (signalFunc == square) {
-				signalFunc = sawtoothUp;
-			} else if (signalFunc == sawtoothUp) {
-				signalFunc = sawtoothDown;
-			} else if (signalFunc == sawtoothDown) {
-				signalFunc = triangle;
-			} else if (signalFunc == triangle) {
-				signalFunc = sine;
-			}
+		if (haudio != NULL && haudio->data_ready_flag == 1) {
+			processUSBData();
+//			haudio->data_ready_flag = 0;
 
-			resetButton = 1;
 		}
+
+//		int stateOfPushButton = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);
+//		if (stateOfPushButton == 1) {
+//			resetButton = 0;
+//		} else if (resetButton == 0) {
+//			if (signalFunc == sine) {
+//				signalFunc = square;
+//			} else if (signalFunc == square) {
+//				signalFunc = sawtoothUp;
+//			} else if (signalFunc == sawtoothUp) {
+//				signalFunc = sawtoothDown;
+//			} else if (signalFunc == sawtoothDown) {
+//				signalFunc = triangle;
+//			} else if (signalFunc == triangle) {
+//				signalFunc = sine;
+//			}
+//
+//			resetButton = 1;
+//		}
 //		if (HAL_GetTick() - last_time > 1000) {
-//			uart_buf_len = sprintf(uart_buf, "%f pot data\r\n", freq);
-//			HAL_UART_Transmit(&huart2, (uint8_t*) uart_buf, uart_buf_len, 100);
-////			HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+//			if (haudio != NULL) {
+//				uart_buf_len = sprintf(uart_buf, "data in called = %u, can read this = %x\r\n", haudio->data_in_called, hUsbDeviceFS.canReadthis);
+//				HAL_UART_Transmit(&huart2, (uint8_t*) uart_buf, uart_buf_len, 100);
+//			}
 //			last_time = HAL_GetTick();
 //		}
 	}
@@ -357,7 +406,7 @@ void SystemClock_Config(void)
   /** Configure the main internal regulator output voltage
   */
   __HAL_RCC_PWR_CLK_ENABLE();
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -366,10 +415,10 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLM = 4;
   RCC_OscInitStruct.PLL.PLLN = 144;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 3;
+  RCC_OscInitStruct.PLL.PLLQ = 6;
   RCC_OscInitStruct.PLL.PLLR = 2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -385,7 +434,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
   {
     Error_Handler();
   }
@@ -503,7 +552,7 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 28800-1;
+  htim2.Init.Prescaler = 1440-1;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 500-1;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
